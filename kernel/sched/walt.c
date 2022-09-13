@@ -1797,6 +1797,64 @@ account_busy_for_task_demand(struct rq *rq, struct task_struct *p, int event)
 	return 1;
 }
 
+#ifdef CONFIG_PACKAGE_RUNTIME_INFO
+static int
+migt_account_busy_for_task_demand(struct rq *rq, struct task_struct *p, int event, 
+					bool account_wait_time)
+{
+	/*
+	 * No need to bother updating task demand for exiting tasks
+	 * or the idle task.
+	 */
+	if (exiting_task(p) || is_idle_task(p))
+		return 0;
+
+	/*
+	 * When a task is waking up it is completing a segment of non-busy
+	 * time. Likewise, if wait time is not treated as busy time, then
+	 * when a task begins to run or is migrated, it is not running and
+	 * is completing a segment of non-busy time.
+	 */
+	if (event == TASK_WAKE || (!account_wait_time &&
+			 (event == PICK_NEXT_TASK || event == TASK_MIGRATE)))
+		return 0;
+
+	/*
+	 * The idle exit time is not accounted for the first task _picked_ up to
+	 * run on the idle CPU.
+	 */
+	if (event == PICK_NEXT_TASK && rq->curr == rq->idle)
+		return 0;
+
+	/*
+	 * TASK_UPDATE can be called on sleeping task, when its moved between
+	 * related groups
+	 */
+	if (event == TASK_UPDATE) {
+		if (rq->curr == p)
+			return 1;
+
+		return p->on_rq ? account_wait_time : 0;
+	}
+
+	return 1;
+}
+
+static int
+account_pkg_busy_time(struct rq *rq, struct task_struct *p, int event)
+{
+	if (is_idle_task(p)) {
+		if (event == PICK_NEXT_TASK)
+			return 0;
+
+		return 1;
+	}
+
+	return migt_account_busy_for_task_demand(rq, p, event, false);
+}
+
+#endif
+
 unsigned int sysctl_sched_task_unfilter_period = 200000000;
 
 /*
@@ -2112,6 +2170,21 @@ void update_task_ravg(struct task_struct *p, struct rq *rq, int event,
 	update_task_demand(p, rq, event, wallclock);
 	update_cpu_busy_time(p, rq, event, wallclock, irqtime);
 	update_task_pred_demand(rq, p, event);
+
+	if (pkg_enable()) {
+		int fstat = 0;
+		u64 delta = 0;
+		int pkg_task_busy = account_pkg_busy_time(rq, p, event);
+		if (pkg_task_busy) {
+			fstat |= PKG_TASK_BUSY;
+			if (is_idle_task(p))
+				delta = irqtime;
+			else
+				delta = wallclock - p->ravg.mark_start;
+			delta = scale_exec_time(delta, rq);
+			update_pkg_load(p, rq->cpu, fstat, wallclock, delta);
+		}
+	}
 
 	if (exiting_task(p))
 		goto done;
@@ -3448,6 +3521,14 @@ void walt_irq_work(struct irq_work *irq_work)
 			if (is_asym_migration && cpumask_test_cpu(cpu,
 							&asym_cap_sibling_cpus))
 				flag |= SCHED_CPUFREQ_INTERCLUSTER_MIG;
+
+            if ((!is_migration && !is_asym_migration) 
+				&& glk_enable()) {
+                cpufreq_update_util(cpu_rq(cpu), flag |
+                        SCHED_CPUFREQ_CONTINUE);
+                i++;
+                        continue;
+                }
 
 			if (i == num_cpus)
 				cpufreq_update_util(cpu_rq(cpu), flag);
