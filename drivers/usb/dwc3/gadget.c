@@ -3281,7 +3281,7 @@ static void dwc3_gadget_endpoint_transfer_in_progress(struct dwc3_ep *dep,
 	}
 
 	if (stop)
-		dwc3_stop_active_transfer(dep, dep->number, true);
+		dwc3_stop_active_transfer(dwc, dep->number, true);
 	else if (dwc3_gadget_ep_should_continue(dep))
 		__dwc3_gadget_kick_transfer(dep);
 	/*
