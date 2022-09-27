@@ -804,8 +804,8 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	const struct qrtr_hdr_v2 *v2;
 	struct sk_buff *skb;
 	struct qrtr_cb *cb;
-	unsigned int size;
 	int errcode;
+	size_t size;
 	unsigned int ver;
 	size_t hdrlen;
 
@@ -871,7 +871,7 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	if (cb->dst_port == QRTR_PORT_CTRL_LEGACY)
 		cb->dst_port = QRTR_PORT_CTRL;
 
-	if (len != ALIGN(size, 4) + hdrlen)
+	if (!size || len != ALIGN(size, 4) + hdrlen)
 		goto err;
 
 	if (cb->dst_port != QRTR_PORT_CTRL && cb->type != QRTR_TYPE_DATA &&
@@ -1743,9 +1743,10 @@ static int qrtr_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	skb = sock_alloc_send_skb(sk, plen + QRTR_HDR_MAX_SIZE,
 				  msg->msg_flags & MSG_DONTWAIT, &rc);
 	if (!skb) {
-		QRTR_INFO_NEW(qrtr_ilc, " skb alloc failed in qrtr_resume_tx");
+		rc = -ENOMEM;
 		goto out_node;
 	}
+
 	skb_reserve(skb, QRTR_HDR_MAX_SIZE);
 
 	rc = memcpy_from_msg(skb_put(skb, len), msg, len);
