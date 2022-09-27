@@ -1645,6 +1645,17 @@ static int dwc3_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int dwc3_core_init_for_resume(struct dwc3 *dwc)
+{
+       int ret;
+
+       ret = reset_control_deassert(dwc->reset);
+       if (ret)
+               return ret;
+
+       ret = clk_bulk_prepare(dwc->num_clks, dwc->clks);
+
 	if (ret)
 		goto assert_reset;
 
