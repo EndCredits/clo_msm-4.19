@@ -480,7 +480,7 @@ do_sync:
 
 		mutex_unlock(&sbi->flush_lock);
 	}
-	f2fs_sync_fs(sbi->sb, true);
+	f2fs_sync_fs(sbi->sb, 1);
 	stat_inc_bg_cp_count(sbi->stat_info);
 }
 
@@ -3031,6 +3031,15 @@ skip:
 
 		if (fatal_signal_pending(current))
 			break;
+
+		/*
+		 * If the trim thread is running and we receive the SCREEN_ON
+		 * event, we will send SIGUSR1 singnal to teriminate the trim
+		 * thread. So if there is a SIGUSR1 signal pending in current
+		 * thread, we need stop issuing discard commands and return.
+		 */
+		if (signal_pending(current) && sigismember(&current->pending.signal, SIGUSR1))
+			break;
 	}
 
 	blk_finish_plug(&plug);
@@ -3083,15 +3092,6 @@ int f2fs_trim_fs(struct f2fs_sb_info *sbi, struct fstrim_range *range)
 	err = f2fs_write_checkpoint(sbi, &cpc);
 	f2fs_up_write(&sbi->gc_lock);
 	if (err)
-		goto out;
-
-	/*
-	 * We filed discard candidates, but actually we don't need to wait for
-	 * all of them, since they'll be issued in idle time along with runtime
-	 * discard option. User configuration looks like using runtime discard
-	 * or periodic fstrim instead of it.
-	 */
-	if (f2fs_realtime_discard_enable(sbi))
 		goto out;
 
 	start_block = START_BLOCK(sbi, start_segno);

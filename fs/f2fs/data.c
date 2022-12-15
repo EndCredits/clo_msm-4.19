@@ -151,6 +151,9 @@ static void f2fs_finish_read_bio(struct bio *bio, bool in_task)
 		unlock_page(page);
 	}
 
+	if (bio->bi_alloc_ts)
+		mm_event_end(F2FS_READ_DATA, bio->bi_alloc_ts);
+
 	if (bio->bi_private)
 		mempool_free(bio->bi_private, bio_post_read_ctx_pool);
 	bio_put(bio);
@@ -271,7 +274,8 @@ static void f2fs_post_read_work(struct work_struct *work)
 
 static void f2fs_read_end_io(struct bio *bio)
 {
-	struct f2fs_sb_info *sbi = F2FS_P_SB(bio_first_page_all(bio));
+	struct page *first_page = bio->bi_io_vec[0].bv_page;
+	struct f2fs_sb_info *sbi = F2FS_P_SB(first_page);
 	struct bio_post_read_ctx *ctx;
 	bool intask = in_task();
 
@@ -286,6 +290,14 @@ static void f2fs_read_end_io(struct bio *bio)
 	if (bio->bi_status) {
 		f2fs_finish_read_bio(bio, intask);
 		return;
+	}
+
+	if (first_page != NULL &&
+		__read_io_type(first_page) == F2FS_RD_DATA) {
+		trace_android_fs_dataread_end(
+					page_file_mapping(first_page)->host,
+					page_file_offset(first_page),
+					bio->bi_iter.bi_size);
 	}
 
 	if (ctx) {
@@ -1076,9 +1088,8 @@ static struct bio *f2fs_grab_read_bio(struct inode *inode, block_t blkaddr,
 	if (!bio)
 		return ERR_PTR(-ENOMEM);
 
-	f2fs_set_bio_crypt_ctx(bio, inode, first_idx, NULL, GFP_NOFS);
-
 	bio->bi_iter.bi_sector = sector;
+	f2fs_set_bio_crypt_ctx(bio, inode, first_idx, NULL, GFP_NOFS);
 	bio->bi_end_io = f2fs_read_end_io;
 
 	if (fscrypt_inode_uses_fs_layer_crypto(inode))
@@ -2211,6 +2222,7 @@ submit_and_realloc:
 			bio = NULL;
 			goto out;
 		}
+		mm_event_start(&bio->bi_alloc_ts);
 	}
 
 	/*
@@ -2367,6 +2379,8 @@ submit_and_realloc:
 				*bio_ret = NULL;
 				return ret;
 			}
+			if (!for_write)
+				mm_event_start(&bio->bi_alloc_ts);
 		}
 
 		if (bio_add_page(bio, page, blocksize, 0) < blocksize)
@@ -2546,7 +2560,7 @@ next_page:
 	}
 	BUG_ON(pages && !list_empty(pages));
 	if (bio)
-		__submit_bio(F2FS_I_SB(inode), bio, DATA);
+		__f2fs_submit_read_bio(F2FS_I_SB(inode), bio, DATA);
 
 	if (pages && is_readahead && !drop_ra)
 		WRITE_ONCE(F2FS_I(inode)->ra_offset, -1);
@@ -4335,6 +4349,7 @@ static int f2fs_swap_activate(struct swap_info_struct *sis, struct file *file,
 	if (ret < 0)
 		return ret;
 
+	stat_inc_swapfile_inode(inode);
 	set_inode_flag(inode, FI_PIN_FILE);
 	f2fs_update_time(F2FS_I_SB(inode), REQ_TIME);
 	return ret;
@@ -4344,6 +4359,7 @@ static void f2fs_swap_deactivate(struct file *file)
 {
 	struct inode *inode = file_inode(file);
 
+	stat_dec_swapfile_inode(inode);
 	clear_inode_flag(inode, FI_PIN_FILE);
 }
 #else
